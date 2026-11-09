@@ -20,7 +20,7 @@ RUN dnf install -y --enablerepo=updates-testing \
     clamav-update \
     python3-pyyaml \
     python3-click \
-    python3-retry \
+    python3-tenacity \
     python3-GitPython \
     python3-fedora-distro-aliases \
     koji \

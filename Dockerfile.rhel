@@ -39,7 +39,7 @@ RUN dnf -y update &&\
     clamav-update \
     python3-pyyaml \
     python3-click \
-    python3-retry \
+    python3-tenacity \
     python3-GitPython \
     koji \
     git \

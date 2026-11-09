@@ -2,6 +2,7 @@
 
 """Clone given git repository and copy local rpminspect configuration file to the current working directory."""
 
+import logging
 import shutil
 import tempfile
 from pathlib import Path
@@ -10,10 +11,18 @@ import sys
 
 import click
 import git
-from retry import retry
+from tenacity import before_sleep_log, retry, retry_if_exception_type, stop_after_attempt, wait_fixed
+
+logger = logging.getLogger(__name__)
 
 
-@retry((git.exc.GitCommandError), delay=60, tries=10, log_traceback=True)
+@retry(
+    retry=retry_if_exception_type(git.exc.GitCommandError),
+    wait=wait_fixed(60),
+    stop=stop_after_attempt(10),
+    before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
+    reraise=True,
+)
 def clone_and_copy(repo_url: str, branches: List[str], commit: str, strategy: str) -> None:
     """Clone given git repository and copy local rpminspect configuration file to the current working directory."""
     git_cmd = git.cmd.Git()
