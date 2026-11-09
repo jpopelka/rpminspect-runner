@@ -1,4 +1,8 @@
-FROM images.paas.redhat.com/osci/base-minimal
+# Tag of the images.paas.redhat.com/osci/base image to build on top of, which
+# selects the RHEL major version: "latest" is RHEL 9, "10" is RHEL 10.
+ARG BASE_IMAGE_TAG=latest
+
+FROM images.paas.redhat.com/osci/base:${BASE_IMAGE_TAG}
 LABEL maintainer "OSCI"
 LABEL description="rpminspect for RHEL"
 
@@ -11,29 +15,31 @@ ENV KOJI_BIN=/usr/bin/brew
 ENV RPMINSPECT_CONFIG=/usr/share/rpminspect/redhat.yaml
 ENV KOJI_HUB_URL=https://brewhub.engineering.redhat.com/brewhub
 
-# Add repository for "brew" command
-RUN cd /etc/yum.repos.d/ && \
-    curl -L -O https://download.devel.redhat.com/rel-eng/RCMTOOLS/rcm-tools-rhel-9-baseos.repo
+# The base image already provides the RH root CA certificates, the nightly RHEL
+# repositories, the rcm-tools repository (for the "brew" command), EPEL and jq.
+# The RHEL major version (9 or 10) is taken from the base image, so that
+# the same Dockerfile works for both.
 
-# Add COPR repository with rpminspect
-RUN cd /etc/yum.repos.d/ && \
-    curl -L -O https://copr.fedorainfracloud.org/coprs/g/osci/rpminspect/repo/epel-9/group_osci-rpminspect-epel-9.repo
-
-# Add COPR repository with rpminspect data package
-RUN cd /etc/yum.repos.d/ && \
-    curl -L -O https://copr.devel.redhat.com/coprs/g/osci/rpminspect-data-redhat/repo/epel-9/group_osci-rpminspect-data-redhat-epel-9.repo
-
-# Add COPR repository with latest fedora-license-data
-RUN cd /etc/yum.repos.d/ && \
-    curl -L -O  https://copr.fedorainfracloud.org/coprs/g/osci/fedora-license-data/repo/epel-9/group_osci-fedora-license-data-epel-9.repo
-
-# Add COPR repository with latest libabigail
-RUN cd /etc/yum.repos.d/ && \
-    curl -L -O  https://copr.fedorainfracloud.org/coprs/g/osci/libabigail/repo/epel-9/group_osci-libabigail-epel-9.repo
+# Add COPR repositories with
+# - rpminspect
+# - rpminspect data package
+# - latest fedora-license-data
+# - latest libabigail
+RUN rhel="$(rpm -E %rhel)" && \
+    cd /etc/yum.repos.d/ && \
+    curl -L -O "https://copr.fedorainfracloud.org/coprs/g/osci/rpminspect/repo/epel-${rhel}/group_osci-rpminspect-epel-${rhel}.repo" && \
+    curl -L -O "https://copr.devel.redhat.com/coprs/g/osci/rpminspect-data-redhat/repo/epel-${rhel}/group_osci-rpminspect-data-redhat-epel-${rhel}.repo" && \
+    curl -L -O "https://copr.fedorainfracloud.org/coprs/g/osci/fedora-license-data/repo/epel-${rhel}/group_osci-fedora-license-data-epel-${rhel}.repo" && \
+    curl -L -O "https://copr.fedorainfracloud.org/coprs/g/osci/libabigail/repo/epel-${rhel}/group_osci-libabigail-epel-${rhel}.repo"
 
 # Update and install dependencies
-RUN dnf -y update &&\
-    dnf -y install --enablerepo=rhel-9-buildroot \
+RUN rhel="$(rpm -E %rhel)" && \
+    # On RHEL 9 the rpmautospec macros are a separate package;
+    # on RHEL 10 they are shipped by redhat-rpm-config.
+    extra_packages="" && \
+    if [ "${rhel}" = "9" ]; then extra_packages="rpmautospec-rpm-macros"; fi && \
+    dnf -y update && \
+    dnf -y install --enablerepo="rhel-${rhel}-buildroot" \
     ${RPMINSPECT_PACKAGE_NAME} \
     ${RPMINSPECT_DATA_PACKAGE_NAME} \
     clamav-update \
@@ -43,14 +49,13 @@ RUN dnf -y update &&\
     python3-GitPython \
     koji \
     git \
-    jq \
     brewkoji \
     "libabigail >= 2.8" \
     "annobin-annocheck >= 13.03" \
     redhat-rpm-config \
-    rpmautospec-rpm-macros \
     ruby-devel \
     rubygems-devel \
+    ${extra_packages} \
     && dnf clean all
 
 # Prepare the configuration file to run rpminspect against Brew stage.

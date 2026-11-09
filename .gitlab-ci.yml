@@ -1,14 +1,92 @@
 ---
 include:
   - project: osci/deployments/ci-deployment-templates
-    file: build-upload-image-template.yml
+    file: common-cicd-vars.yml
 
 variables:
+  CI_REGISTRY: images.paas.redhat.com
+  CI_REGISTRY_NAMESPACE: osci
   CI_REGISTRY_REPO: rpminspect
   DOCKERFILE_PATH: $CI_PROJECT_DIR/Dockerfile.rhel
+  # https://source.redhat.com/groups/public/gitlabcee/user_documentation/gitlabcee_shared_runner_faqs
+  KUBERNETES_MEMORY_LIMIT: "4Gi"
+
+# TEMPORARY: build the RHEL 9 and RHEL 10 based images side by side (one job per
+# RHEL major version), so we can quickly go back to the RHEL 9 one if the RHEL 10
+# one doesn't work as expected. Once we've confirmed that everything works with
+# the RHEL 10 based image, drop the RHEL 9 build: remove the parallel matrix and
+# the RHEL 9 special-casing below, and make RHEL 10 the default (latest, <sha>,
+# <calver>-<sha> tags) in Dockerfile.rhel (BASE_IMAGE_TAG) and in this file.
+#
+# Same tag scheme as osci/base:
+#
+#            RHEL 9 (base image :latest)        RHEL 10 (base image :10)
+#   push     latest                             10
+#            <sha>                              10-<sha>
+#            <calver>-<sha>                     <calver>-10-<sha>
+#   MR       mr-<iid>                           10-mr-<iid>
+#            mr-<iid>-<sha>                     10-mr-<iid>-<sha>
+#            mr-<sha>                           10-mr-<sha>
+.build-and-upload-image:
+  image: registry.access.redhat.com/ubi10/buildah
+  stage: build
+  tags: [$SHARED_RUNNER_TAG]
+  parallel:
+    matrix:
+      - RHEL_MAJOR: ["9", "10"]
+  variables:
+    REGISTRY_AUTH_FILE: ${CI_BUILDS_DIR}/auth-${CI_JOB_ID}.json
+  before_script:
+    - cat "$DOCKER_AUTH_CONFIG" > "$REGISTRY_AUTH_FILE"
+  script:
+    - |
+      set -eu
+      image="${CI_REGISTRY}/${CI_REGISTRY_NAMESPACE}/${CI_REGISTRY_REPO}"
+
+      # RHEL 9 is the default: it uses the base image's :latest and unprefixed tags.
+      if [ "$RHEL_MAJOR" = "9" ]; then
+        base_image_tag=latest
+        prefix=""
+        floating_tag=latest
+      else
+        base_image_tag="$RHEL_MAJOR"
+        prefix="${RHEL_MAJOR}-"
+        floating_tag="$RHEL_MAJOR"
+      fi
+
+      if [ -n "${CI_MERGE_REQUEST_IID:-}" ]; then
+        tags="${prefix}mr-${CI_MERGE_REQUEST_IID} ${prefix}mr-${CI_MERGE_REQUEST_IID}-${CI_COMMIT_SHORT_SHA} ${prefix}mr-${CI_COMMIT_SHORT_SHA}"
+      else
+        # CalVer tag (sorts chronologically) so that Renovate can detect and bump to the newest build.
+        calver="$(date -u +%Y.%m.%d-%H%M%S)"
+        tags="${calver}-${prefix}${CI_COMMIT_SHORT_SHA} ${prefix}${CI_COMMIT_SHORT_SHA} ${floating_tag}"
+      fi
+
+      tag_args=""
+      for t in $tags; do tag_args="$tag_args --tag ${image}:${t}"; done
+      # shellcheck disable=SC2086 # tag_args are controlled, intentional splitting
+      buildah build \
+        --build-arg "BASE_IMAGE_TAG=${base_image_tag}" \
+        --file "$DOCKERFILE_PATH" \
+        $tag_args \
+        "$CI_PROJECT_DIR"
+      for t in $tags; do buildah push "${image}:${t}"; done
+  # Remove the credentials file even if the build fails.
+  after_script:
+    - rm -f "$REGISTRY_AUTH_FILE"
+    - >
+      if [ "$CI_JOB_STATUS" = 'success' ]; then
+        echo ------------------------------------------------------------------------------------
+        echo Image pushed to: "https://${CI_REGISTRY}/${CI_REGISTRY_NAMESPACE}/${CI_REGISTRY_REPO}?tab=tags"
+        echo ------------------------------------------------------------------------------------
+      fi
+
+mr-build-and-upload-image:
+  extends: .build-and-upload-image
+  rules:
+    - if: $CI_PROJECT_NAMESPACE == "osci" && $CI_PIPELINE_SOURCE == "merge_request_event"
 
 build-and-upload-image:
   extends: .build-and-upload-image
-
-mr-build-and-upload-image:
-  extends: .mr-build-and-upload-image
+  rules:
+    - if: $CI_PROJECT_NAMESPACE == "osci" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
